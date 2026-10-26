@@ -3,7 +3,7 @@
  * Plugin Name: OneSpace Toolkit
  * Plugin URI: https://github.com/kontsantin/onespace-toolkit
  * Description: Миграция сайта в формате .pomigrate, транслитерация слагов и русификация Carbon Fields.
- * Version: 1.0.1
+ * Version: 1.0.2
  * Author: OneSpace
  * License: GPL-3.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-3.0.html
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 	exit;
 }
 
-define('ONESPACE_TOOLKIT_VERSION', '1.0.1');
+define('ONESPACE_TOOLKIT_VERSION', '1.0.2');
 define('ONESPACE_TOOLKIT_FILE', __FILE__);
 define('ONESPACE_TOOLKIT_DIR', plugin_dir_path(__FILE__));
 define('ONESPACE_TOOLKIT_URL', plugin_dir_url(__FILE__));
@@ -40,3 +40,4 @@ add_action('plugins_loaded', function () {
 	\OneSpace\Toolkit\CarbonFields::boot();
 	\OneSpace\Toolkit\Migrate\Plugin::boot();
 });
+

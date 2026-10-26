@@ -79,6 +79,44 @@ class Archive {
 		return 0;
 	}
 
+	public static function measureDirectory($dir, $exclude = array(), $excludeBase = '') {
+		$dir = rtrim($dir, '/\\');
+		$result = array('files' => 0, 'bytes' => 0);
+
+		if (!is_dir($dir)) {
+			return $result;
+		}
+
+		foreach (self::iterator($dir, $exclude, $excludeBase) as $file) {
+			if ($file->isDir() || !$file->isReadable()) {
+				continue;
+			}
+
+			$result['files']++;
+			$result['bytes'] += (int) $file->getSize();
+		}
+
+		return $result;
+	}
+
+	public static function measurePath($path, $exclude = array(), $excludeBase = '') {
+		if (is_file($path)) {
+			$match = $excludeBase !== '' ? $excludeBase : basename($path);
+
+			if (self::isExcluded($match, $exclude)) {
+				return array('files' => 0, 'bytes' => 0);
+			}
+
+			return array('files' => 1, 'bytes' => (int) filesize($path));
+		}
+
+		if (is_dir($path)) {
+			return self::measureDirectory($path, $exclude, $excludeBase);
+		}
+
+		return array('files' => 0, 'bytes' => 0);
+	}
+
 	public static function addDirectory($zip, $dir, $prefix, $exclude = array(), $progress = null, $total = 0, $excludeBase = '') {
 		$dir = rtrim($dir, '/\\');
 
@@ -101,7 +139,10 @@ class Archive {
 				continue;
 			}
 
-			$zip->addFile($file->getPathname(), $prefix . '/' . $relative);
+			if (!$zip->addFile($file->getPathname(), $prefix . '/' . $relative)) {
+				throw new \RuntimeException('Не удалось записать файл в архив: ' . $file->getPathname());
+			}
+
 			$count++;
 
 			if (is_callable($progress) && ($count % 25 === 0)) {
@@ -125,7 +166,7 @@ class Archive {
 			}
 
 			if (!$zip->addFile($path, $local)) {
-				return 0;
+				throw new \RuntimeException('Не удалось записать файл в архив: ' . $path);
 			}
 
 			if (is_callable($progress)) {

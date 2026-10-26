@@ -47,103 +47,196 @@ class Exporter {
 			throw new \RuntimeException('Нечего экспортировать: выберите базу данных или папки/файлы.');
 		}
 
+		$lock = self::lock();
 		$sqlFile = null;
-		$progress = isset($args['progress']) && is_callable($args['progress']) ? $args['progress'] : null;
+		$zip = null;
 
-		if (is_callable($progress)) {
-			call_user_func($progress, 'prepare', 0, 0);
-		}
+		try {
+			self::cleanupStaleTemps();
 
-		if ($database) {
-			$sqlFile = trailingslashit(get_temp_dir()) . 'pomigrate-' . wp_generate_password(12, false, false) . '.sql';
+			$totalFiles = 0;
+			$totalBytes = 0;
 
-			Database::dump($sqlFile, function ($table, $current, $total) use ($progress) {
-				if (is_callable($progress)) {
-					call_user_func($progress, 'database', $current, $total, $table);
-				}
-			});
-		}
-
-		$manifest = array(
-			'format' => 'pomigrate',
-			'format_version' => 1,
-			'plugin_version' => ONESPACE_TOOLKIT_VERSION,
-			'created_at' => gmdate('c'),
-			'wp_version' => get_bloginfo('version'),
-			'site_url' => untrailingslashit(site_url()),
-			'home_url' => untrailingslashit(home_url()),
-			'table_prefix' => $GLOBALS['wpdb']->prefix,
-			'db_charset' => defined('DB_CHARSET') ? DB_CHARSET : '',
-			'active_plugins' => (array) get_option('active_plugins', array()),
-			'template' => get_option('template'),
-			'stylesheet' => get_option('stylesheet'),
-			'tables' => $database ? Database::tables() : array(),
-			'database' => $database,
-			'scopes' => $scopes,
-			'include_paths' => $includePaths,
-			'exclude_paths' => $excludePaths,
-			'files_prefix' => 'files',
-			'excluded' => $exclude,
-			'roots' => $roots,
-		);
-
-		$zip = Archive::openForWrite($output);
-		$zip->addFromString('manifest.json', wp_json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-
-		if ($database && $sqlFile) {
-			$zip->addFile($sqlFile, 'database.sql');
-		}
-
-		$totalFiles = 0;
-
-		foreach ($roots as $root) {
-			$totalFiles += Archive::countPath(WP_CONTENT_DIR . '/' . $root, $exclude, $root);
-		}
-
-		if (is_callable($progress)) {
-			call_user_func($progress, 'files', 0, $totalFiles);
-		}
-
-		$files = 0;
-
-		foreach ($roots as $root) {
-			$path = WP_CONTENT_DIR . '/' . $root;
-
-			if (!file_exists($path)) {
-				continue;
+			foreach ($roots as $root) {
+				$measure = Archive::measurePath(WP_CONTENT_DIR . '/' . $root, $exclude, $root);
+				$totalFiles += $measure['files'];
+				$totalBytes += $measure['bytes'];
 			}
 
-			$base = $files;
+			$dbBytes = $database ? Database::size() : 0;
+			$required = $totalBytes + ($database ? 2 * $dbBytes : 0);
+			$required = (int) ($required * 1.1) + (50 * 1024 * 1024);
+			$free = @disk_free_space(WP_CONTENT_DIR);
 
-			$files += Archive::addPath(
-				$zip,
-				$path,
-				'files/' . $root,
-				$exclude,
-				function ($current, $total) use ($progress, $base, $totalFiles) {
+			if ($free !== false && $required > 0 && $free < $required) {
+				throw new \RuntimeException(
+					'Недостаточно места на диске: нужно примерно ' . size_format($required)
+					. ', свободно ' . size_format($free)
+					. '. Уменьшите состав экспорта или освободите место.'
+				);
+			}
+
+			$progress = isset($args['progress']) && is_callable($args['progress']) ? $args['progress'] : null;
+
+			if (is_callable($progress)) {
+				call_user_func($progress, 'prepare', 0, 0);
+			}
+
+			if ($database) {
+				$sqlFile = trailingslashit(get_temp_dir()) . 'pomigrate-' . wp_generate_password(12, false, false) . '.sql';
+
+				Database::dump($sqlFile, function ($table, $current, $total) use ($progress) {
 					if (is_callable($progress)) {
-						call_user_func($progress, 'files', $base + $current, $totalFiles);
+						call_user_func($progress, 'database', $current, $total, $table);
 					}
-				},
-				$totalFiles,
-				$root
+				});
+			}
+
+			$manifest = array(
+				'format' => 'pomigrate',
+				'format_version' => 1,
+				'plugin_version' => ONESPACE_TOOLKIT_VERSION,
+				'created_at' => gmdate('c'),
+				'wp_version' => get_bloginfo('version'),
+				'site_url' => untrailingslashit(site_url()),
+				'home_url' => untrailingslashit(home_url()),
+				'table_prefix' => $GLOBALS['wpdb']->prefix,
+				'db_charset' => defined('DB_CHARSET') ? DB_CHARSET : '',
+				'active_plugins' => (array) get_option('active_plugins', array()),
+				'template' => get_option('template'),
+				'stylesheet' => get_option('stylesheet'),
+				'tables' => $database ? Database::tables() : array(),
+				'database' => $database,
+				'scopes' => $scopes,
+				'include_paths' => $includePaths,
+				'exclude_paths' => $excludePaths,
+				'files_prefix' => 'files',
+				'excluded' => $exclude,
+				'roots' => $roots,
 			);
+
+			$zip = Archive::openForWrite($output);
+
+			if (!$zip->addFromString('manifest.json', wp_json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE))) {
+				throw new \RuntimeException('Не удалось записать manifest.json в архив.');
+			}
+
+			if ($database && $sqlFile && !$zip->addFile($sqlFile, 'database.sql')) {
+				throw new \RuntimeException('Не удалось записать database.sql в архив.');
+			}
+
+			if (is_callable($progress)) {
+				call_user_func($progress, 'files', 0, $totalFiles);
+			}
+
+			$files = 0;
+
+			foreach ($roots as $root) {
+				$path = WP_CONTENT_DIR . '/' . $root;
+
+				if (!file_exists($path)) {
+					continue;
+				}
+
+				$base = $files;
+
+				$files += Archive::addPath(
+					$zip,
+					$path,
+					'files/' . $root,
+					$exclude,
+					function ($current, $total) use ($progress, $base, $totalFiles) {
+						if (is_callable($progress)) {
+							call_user_func($progress, 'files', $base + $current, $totalFiles);
+						}
+					},
+					$totalFiles,
+					$root
+				);
+			}
+
+			if ($zip->close() !== true) {
+				throw new \RuntimeException('Не удалось завершить архив. Возможно, закончилось место на диске.');
+			}
+
+			$zip = null;
+
+			if ($sqlFile) {
+				@unlink($sqlFile);
+				$sqlFile = null;
+			}
+
+			return array(
+				'path' => $output,
+				'files' => $files,
+				'tables' => $database ? count($manifest['tables']) : 0,
+				'database' => $database,
+				'scopes' => $scopes,
+				'manifest' => $manifest,
+			);
+		} catch (\Throwable $e) {
+			if ($zip instanceof \ZipArchive) {
+				@$zip->close();
+			}
+
+			if ($sqlFile) {
+				@unlink($sqlFile);
+			}
+
+			self::cleanupOutput($output);
+
+			throw $e;
+		} finally {
+			self::unlock($lock);
+		}
+	}
+
+	protected static function lock() {
+		$path = Plugin::backup_dir() . '/export.lock';
+		$handle = @fopen($path, 'c');
+
+		if (!$handle) {
+			throw new \RuntimeException('Не удалось создать lock-файл экспорта.');
 		}
 
-		$zip->close();
-
-		if ($sqlFile) {
-			@unlink($sqlFile);
+		if (!flock($handle, LOCK_EX | LOCK_NB)) {
+			fclose($handle);
+			throw new \RuntimeException('Экспорт уже выполняется. Дождитесь его завершения.');
 		}
 
-		return array(
-			'path' => $output,
-			'files' => $files,
-			'tables' => $database ? count($manifest['tables']) : 0,
-			'database' => $database,
-			'scopes' => $scopes,
-			'manifest' => $manifest,
-		);
+		return $handle;
+	}
+
+	protected static function unlock($handle) {
+		if (is_resource($handle)) {
+			@flock($handle, LOCK_UN);
+			@fclose($handle);
+		}
+	}
+
+	protected static function cleanupStaleTemps() {
+		$dir = Plugin::backup_dir();
+		$limit = time() - 86400;
+
+		foreach (array($dir . '/*.pomigrate.*', $dir . '/*.zip.*') as $pattern) {
+			foreach (glob($pattern) ?: array() as $file) {
+				if (is_file($file) && filemtime($file) < $limit) {
+					@unlink($file);
+				}
+			}
+		}
+	}
+
+	protected static function cleanupOutput($output) {
+		foreach (glob($output . '.*') ?: array() as $file) {
+			if (is_file($file)) {
+				@unlink($file);
+			}
+		}
+
+		if (is_file($output)) {
+			@unlink($output);
+		}
 	}
 
 	protected static function roots($scopes, $includePaths, $exclude) {

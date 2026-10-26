@@ -7,6 +7,16 @@ if (!defined('ABSPATH')) {
 }
 
 class Database {
+	public static function size() {
+		global $wpdb;
+
+		$size = $wpdb->get_var(
+			'SELECT SUM(data_length + index_length) FROM information_schema.TABLES WHERE table_schema = DATABASE()'
+		);
+
+		return $size ? (int) $size : 0;
+	}
+
 	public static function tables() {
 		global $wpdb;
 

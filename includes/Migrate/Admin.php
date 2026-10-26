@@ -118,11 +118,20 @@ class Admin {
 		$backupDir = Plugin::backup_dir();
 		$archives = array_merge(
 			glob($backupDir . '/*.pomigrate') ?: array(),
-			glob($backupDir . '/*.sql') ?: array()
+			glob($backupDir . '/*.zip') ?: array(),
+			glob($backupDir . '/*.sql') ?: array(),
+			glob($backupDir . '/*.pomigrate.*') ?: array(),
+			glob($backupDir . '/*.zip.*') ?: array()
 		);
+		$archives = array_values(array_unique($archives));
 		usort($archives, function ($a, $b) {
 			return filemtime($b) <=> filemtime($a);
 		});
+
+		$incompleteFiles = array_values(array_filter($archives, function ($file) {
+			return self::isIncompleteName(basename($file));
+		}));
+
 		$archives = array_slice($archives, 0, 10);
 		?>
 		<div class="wrap onespace-toolkit">
@@ -141,6 +150,15 @@ class Admin {
 				<div class="notice notice-error"><p><?php echo esc_html($message); ?></p></div>
 			<?php elseif ($notice === 'saved') : ?>
 				<div class="notice notice-success"><p>Настройки сохранены.</p></div>
+			<?php endif; ?>
+
+			<?php if (!empty($incompleteFiles)) : ?>
+				<div class="notice notice-warning">
+					<p>
+						Есть незавершённые экспорты: <strong><?php echo count($incompleteFiles); ?></strong>.
+						<a href="<?php echo esc_url(admin_url('admin.php?page=onespace-toolkit-backups')); ?>">Открыть бэкапы</a>
+					</p>
+				</div>
 			<?php endif; ?>
 
 			<div id="onespace-progress" class="onespace-progress" hidden>
@@ -325,8 +343,8 @@ class Admin {
 		$notice = isset($_GET['onespace_notice']) ? sanitize_key($_GET['onespace_notice']) : '';
 		$message = isset($_GET['onespace_message']) ? sanitize_text_field(wp_unslash($_GET['onespace_message'])) : '';
 		$path = self::resolveBackupPath($file);
-		$ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
-		$isArchive = in_array($ext, array('pomigrate', 'zip'), true);
+		$isIncomplete = self::isIncompleteName($file);
+		$isArchive = self::isArchiveName($file);
 		$listUrl = admin_url('admin.php?page=onespace-toolkit-backups');
 		?>
 		<div class="wrap onespace-toolkit">
@@ -346,11 +364,17 @@ class Admin {
 				<?php return; ?>
 			<?php endif; ?>
 
+			<?php if ($isIncomplete) : ?>
+				<div class="notice notice-warning">
+					<p>Экспорт не завершён. Скорее всего, закончилось место на диске или процесс был прерван. Импортировать этот файл нельзя — его нужно удалить.</p>
+				</div>
+			<?php endif; ?>
+
 			<div class="card onespace-toolkit__summary">
 				<div class="onespace-toolkit__summary-head">
 					<div>
-						<span class="onespace-toolkit__badge <?php echo $isArchive ? 'is-archive' : 'is-sql'; ?>">
-							<?php echo $isArchive ? 'Архив сайта' : 'База данных'; ?>
+						<span class="onespace-toolkit__badge <?php echo $isIncomplete ? 'is-warning' : ($isArchive ? 'is-archive' : 'is-sql'); ?>">
+							<?php echo $isIncomplete ? 'Незавершённый' : ($isArchive ? 'Архив сайта' : 'База данных'); ?>
 						</span>
 						<h2>Информация о файле</h2>
 					</div>
@@ -382,7 +406,7 @@ class Admin {
 						<dt>Путь</dt>
 						<dd><code><?php echo esc_html($path); ?></code></dd>
 					</div>
-					<?php if ($isArchive) : ?>
+					<?php if ($isArchive && !$isIncomplete) : ?>
 						<?php $info = self::archiveInfo($path); ?>
 						<div>
 							<dt>Файлов внутри</dt>
@@ -392,7 +416,13 @@ class Admin {
 				</dl>
 			</div>
 
-			<?php if ($isArchive) : ?>
+			<?php if ($isIncomplete) : ?>
+				<div class="card onespace-toolkit__summary">
+					<h2>Что делать</h2>
+					<p>Удалите незавершённый файл и запустите экспорт с меньшим составом или освободите место на диске. Если места мало, экспортируйте по частям: отдельно базу, отдельно медиатеку, отдельно темы и плагины.</p>
+					<p><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=onespace-toolkit')); ?>">Перейти к экспорту</a></p>
+				</div>
+			<?php elseif ($isArchive) : ?>
 				<?php self::renderManifestSummary($path); ?>
 
 				<div class="onespace-toolkit__section-head">
@@ -501,12 +531,15 @@ class Admin {
 		$dir = Plugin::backup_dir();
 		$archiveCount = 0;
 		$sqlCount = 0;
+		$incompleteCount = 0;
 		$totalSize = 0;
 
 		foreach ($files as $file) {
-			$ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+			$name = basename($file);
 
-			if (in_array($ext, array('pomigrate', 'zip'), true)) {
+			if (self::isIncompleteName($name)) {
+				$incompleteCount++;
+			} elseif (self::isArchiveName($name)) {
 				$archiveCount++;
 			} else {
 				$sqlCount++;
@@ -528,6 +561,12 @@ class Admin {
 				<span>Общий размер</span>
 				<strong><?php echo esc_html(size_format($totalSize)); ?></strong>
 			</div>
+			<?php if ($incompleteCount > 0) : ?>
+				<div class="onespace-toolkit__stat is-warning">
+					<span>Незавершённые</span>
+					<strong><?php echo (int) $incompleteCount; ?></strong>
+				</div>
+			<?php endif; ?>
 		</div>
 
 		<div class="onespace-toolkit__list-head">
@@ -567,9 +606,9 @@ class Admin {
 					<?php foreach ($files as $file) : ?>
 						<?php
 						$name = basename($file);
-						$ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
-						$isArchive = in_array($ext, array('pomigrate', 'zip'), true);
-						$info = $isArchive ? self::archiveInfo($file) : null;
+						$isIncomplete = self::isIncompleteName($name);
+						$isArchive = self::isArchiveName($name);
+						$info = ($isArchive && !$isIncomplete) ? self::archiveInfo($file) : null;
 						$viewUrl = add_query_arg(
 							array(
 								'page' => 'onespace-toolkit-backup',
@@ -578,16 +617,26 @@ class Admin {
 							admin_url('admin.php')
 						);
 						?>
-						<tr>
+						<tr class="<?php echo $isIncomplete ? 'onespace-toolkit__row-warning' : ''; ?>">
 							<td class="onespace-toolkit__check">
 								<input type="checkbox" class="onespace-toolkit__file-check" name="files[]" value="<?php echo esc_attr($name); ?>" form="onespace-bulk-form" aria-label="<?php echo esc_attr('Выбрать ' . $name); ?>">
 							</td>
 							<td><code><?php echo esc_html($name); ?></code></td>
-							<td><?php echo $isArchive ? 'Архив сайта' : 'База данных'; ?></td>
+							<td>
+								<?php if ($isIncomplete) : ?>
+									<span class="onespace-toolkit__badge is-warning">Незавершённый</span>
+								<?php elseif ($isArchive) : ?>
+									<span class="onespace-toolkit__badge is-archive">Архив сайта</span>
+								<?php else : ?>
+									<span class="onespace-toolkit__badge is-sql">База данных</span>
+								<?php endif; ?>
+							</td>
 							<td><?php echo esc_html(size_format(filesize($file))); ?></td>
 							<td>
 								<?php
-								if ($isArchive) {
+								if ($isIncomplete) {
+									echo '<span class="description">Экспорт прерван</span>';
+								} elseif ($isArchive) {
 									echo (int) $info['files'] . ' файлов';
 								} else {
 									echo 'SQL-дамп';
@@ -596,7 +645,7 @@ class Admin {
 							</td>
 							<td><?php echo esc_html(wp_date('Y-m-d H:i', filemtime($file))); ?></td>
 							<td class="onespace-toolkit__actions">
-								<a class="button button-small" href="<?php echo esc_url($viewUrl); ?>"><?php echo $isArchive ? 'Посмотреть файлы' : 'Открыть'; ?></a>
+								<a class="button button-small" href="<?php echo esc_url($viewUrl); ?>"><?php echo ($isArchive && !$isIncomplete) ? 'Посмотреть файлы' : 'Открыть'; ?></a>
 								<a class="button button-small" href="<?php echo esc_url(self::downloadUrl($name)); ?>">Скачать</a>
 								<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="onespace-toolkit__inline" onsubmit="return confirm('Удалить файл?');">
 									<?php wp_nonce_field('onespace_toolkit_delete_backup'); ?>
@@ -956,16 +1005,26 @@ class Admin {
 		$files = array_merge(
 			glob($dir . '/*.pomigrate') ?: array(),
 			glob($dir . '/*.zip') ?: array(),
-			glob($dir . '/*.sql') ?: array()
+			glob($dir . '/*.sql') ?: array(),
+			glob($dir . '/*.pomigrate.*') ?: array(),
+			glob($dir . '/*.zip.*') ?: array()
 		);
 
-		$files = array_values(array_filter($files, 'is_file'));
+		$files = array_values(array_unique(array_filter($files, 'is_file')));
 
 		usort($files, function ($a, $b) {
 			return filemtime($b) <=> filemtime($a);
 		});
 
 		return $files;
+	}
+
+	protected static function isArchiveName($name) {
+		return (bool) preg_match('/\.(pomigrate|zip)(?:\.[a-z0-9]+)?$/i', $name);
+	}
+
+	protected static function isIncompleteName($name) {
+		return (bool) preg_match('/\.(pomigrate|zip)\.[a-z0-9]+$/i', $name);
 	}
 
 	protected static function archiveInfo($path) {

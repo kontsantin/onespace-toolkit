@@ -213,6 +213,28 @@
 	color: #3c6e0b;
 }
 
+.onespace-toolkit__badge.is-warning {
+	background: #fcf0d4;
+	color: #8a5a00;
+}
+
+.onespace-toolkit__row-warning td {
+	background: #fff8e1;
+}
+
+.onespace-toolkit__row-warning:hover td {
+	background: #fff3c4;
+}
+
+.onespace-toolkit__stat.is-warning {
+	background: #fff8e1;
+	border-color: #f0c36d;
+}
+
+.onespace-toolkit__stat.is-warning strong {
+	color: #8a5a00;
+}
+
 .onespace-toolkit__meta {
 	display: grid;
 	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

@@ -4,7 +4,18 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$source = $PSScriptRoot
+$php = Get-Command php -ErrorAction SilentlyContinue
+
+if ($php) {
+	& php (Join-Path $PSScriptRoot 'build.php') $Output
+
+	if ($LASTEXITCODE -ne 0) {
+		throw 'Build failed.'
+	}
+
+	return
+}
+
 $stageRoot = Join-Path $env:TEMP 'onespace-toolkit-stage'
 $stagePlugin = Join-Path $stageRoot 'onespace-toolkit'
 
@@ -14,7 +25,7 @@ if (Test-Path $stageRoot) {
 
 New-Item -ItemType Directory -Path $stagePlugin -Force | Out-Null
 
-robocopy $source $stagePlugin /E /XD build .git .vscode /XF *.zip install.ps1 build.ps1 .gitignore /NFL /NDL /NJH /NJS /NP | Out-Null
+robocopy $PSScriptRoot $stagePlugin /E /XD build .git .vscode /XF *.zip install.ps1 build.ps1 build.php .gitignore /NFL /NDL /NJH /NJS /NP | Out-Null
 
 $outputDir = Split-Path -Parent $Output
 if (!(Test-Path $outputDir)) {
